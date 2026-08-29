@@ -83,11 +83,12 @@ s += card(820, 110, 240, 170, "LIVEKIT SIP", [
 ], C.teal);
 
 s += card(1120, 110, 400, 210, "AI AGENT  (LiveKit Cloud)", [
-  "Sarvam Saaras STT · codemix mode,",
-  "  auto-detect te / hi / ta / en",
+  "Soniox realtime STT · auto language",
+  "  ID (en / hi / ta / te, code-switching)",
   "DeepSeek v4-flash LLM sells, discovers,",
   "  classifies and decides",
-  "Sarvam Bulbul TTS (auto-lang, shreya)",
+  "Cartesia Sonic 3.5 TTS · sub-90ms,",
+  "  native voice per language",
 ], C.accent);
 
 // ===== Row 2: glue + externals =====
@@ -114,16 +115,17 @@ s += card(40, 430, 310, 310, "WHATSAPP  (Baileys)", [
 ], C.amber);
 
 s += card(1120, 430, 400, 310, "EXTERNAL SERVICES", [
-  "Sarvam AI — STT + TTS",
-  "  (₹100 free credit)",
+  "Soniox — realtime STT",
+  "  (auto language ID)",
+  "",
+  "Cartesia — Sonic 3.5 TTS",
+  "  (native voice per language)",
   "",
   "DeepSeek — LLM + follow-up writer",
   "  + callback time resolution",
   "",
   "LiveKit Cloud — SFU + agent hosting",
-  "  (free Build plan)",
   "Deployed via Coolify + Cloudflare",
-  "  (ngrok for local testing)",
 ], C.purple);
 
 // ===== classification strip =====

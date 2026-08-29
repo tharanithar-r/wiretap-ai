@@ -124,7 +124,7 @@ See `.env.example` for the full list. Key ones:
 | `SIP_OUTBOUND_TRUNK_ID` | Telnyx outbound trunk |
 | `SARVAM_API_KEY` | Sarvam STT/TTS (fallback only) |
 | `SONIOX_API_KEY` | Soniox realtime STT |
-| `CARTESIA_API_KEY` | Cartesia Sonic TTS |
+| `CARTESIA_API_KEY` | Cartesia Sonic TTS (per-language native voices) |
 | `DEEPSEEK_API_KEY` | LLM |
 | `API_SECRET` | Shared key for agent → API calls |
 

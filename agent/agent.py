@@ -37,9 +37,9 @@ FROM_NUMBER = os.getenv("SIP_FROM_NUMBER", "")
 # Per-language Cartesia voices (override via env if needed). Switched together
 # with the language in the transcript listener.
 LANG_VOICES: dict[str, str] = {
-    "en": os.getenv("CARTESIA_VOICE_EN", "25d7abcb-4d6d-4aca-adce-8a1c85620c8b"),
+    "en": os.getenv("CARTESIA_VOICE_EN", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
     "ta": os.getenv("CARTESIA_VOICE_TA", "01d7796d-ac10-4ea3-8df0-3cc04f2d25ff"),
-    "te": os.getenv("CARTESIA_VOICE_TE", "cf061d8b-a752-4865-81a2-57570a6e0565"),
+    "te": os.getenv("CARTESIA_VOICE_TE", "4418bb06-8329-49a1-bb11-53bb64ca0547"),
     "hi": os.getenv("CARTESIA_VOICE_HI", "bec003e2-3cb3-429c-8468-206a393c67ad"),
 }
 
@@ -82,11 +82,14 @@ def _build_session() -> AgentSession:
         )
     else:
         # Soniox real-time STT (default): auto language identification (handles
-        # en/ta/te/hi code-switching with no hints), plus aggressive endpoint
-        # tuning so the turn commits as soon as the caller pauses.
+        # en/ta/te/hi code-switching), plus aggressive endpoint tuning so the
+        # turn commits as soon as the caller pauses. Language hints bias the
+        # model toward our 4 languages (they don't restrict it), improving
+        # accuracy without breaking code-switching.
         stt = soniox.STT(
             params=soniox.STTOptions(
                 model="stt-rt-v5",
+                language_hints=["en", "hi", "ta", "te"],
                 enable_language_identification=True,
                 max_endpoint_delay_ms=500,
                 endpoint_latency_adjustment_level=3,
@@ -112,7 +115,7 @@ def _build_session() -> AgentSession:
         tts = cartesia.TTS(
             api_key=os.getenv("CARTESIA_API_KEY"),
             model="sonic-3.5",
-            voice=os.getenv("CARTESIA_VOICE_EN", "25d7abcb-4d6d-4aca-adce-8a1c85620c8b"),
+            voice=os.getenv("CARTESIA_VOICE_EN", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
             language="en",
         )
 
