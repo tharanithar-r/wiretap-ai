@@ -27,7 +27,7 @@ ENV ASSETS_DIR=/app/assets
 ENV DASHBOARD_DIST=/app/dashboard/dist
 
 # API runtime deps (fresh install, no build tools needed — better-sqlite3 prebuilt binary)
-COPY --from=api-build /app/api/package.json ./api/
+COPY --from=api-build /app/api/package.json /app/api/package-lock.json ./api/
 WORKDIR /app/api
 RUN npm ci --omit=dev
 COPY --from=api-build /app/api/dist ./dist
