@@ -34,6 +34,15 @@ AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "elevatebox-sales")
 TRUNK_ID = os.getenv("SIP_OUTBOUND_TRUNK_ID", "")
 FROM_NUMBER = os.getenv("SIP_FROM_NUMBER", "")
 
+# Per-language Cartesia voices (override via env if needed). Switched together
+# with the language in the transcript listener.
+LANG_VOICES: dict[str, str] = {
+    "en": os.getenv("CARTESIA_VOICE_EN", "25d7abcb-4d6d-4aca-adce-8a1c85620c8b"),
+    "ta": os.getenv("CARTESIA_VOICE_TA", "01d7796d-ac10-4ea3-8df0-3cc04f2d25ff"),
+    "te": os.getenv("CARTESIA_VOICE_TE", "cf061d8b-a752-4865-81a2-57570a6e0565"),
+    "hi": os.getenv("CARTESIA_VOICE_HI", "bec003e2-3cb3-429c-8468-206a393c67ad"),
+}
+
 
 async def _api_post(path: str, payload: dict) -> str:
     base = os.getenv("API_BASE_URL", "http://localhost:3000").rstrip("/")
@@ -97,14 +106,13 @@ def _build_session() -> AgentSession:
         )
     else:
         # Cartesia Sonic 3.5 (default): sub-90ms latency, natural expressive
-        # voice. Jacqueline (9626c31c-...) is a featured female voice with a
-        # native Hindi accent; the multilingual model adapts it to Tamil and
-        # Telugu while keeping the same voice identity. Language is switched
-        # per-utterance via update_options in the transcript listener.
+        # voice. Each language uses its own native voice, switched per-utterance
+        # via update_options in the transcript listener (voice switching is
+        # parameter-only — the WebSocket stays open, so no extra latency).
         tts = cartesia.TTS(
             api_key=os.getenv("CARTESIA_API_KEY"),
             model="sonic-3.5",
-            voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",  # Jacqueline
+            voice=os.getenv("CARTESIA_VOICE_EN", "25d7abcb-4d6d-4aca-adce-8a1c85620c8b"),
             language="en",
         )
 
@@ -223,10 +231,16 @@ async def entrypoint(ctx: JobContext) -> None:
             try:
                 if session.tts:
                     # Soniox returns 2-letter codes (en/hi/ta/te); Sarvam returns
-                    # BCP-47 (en-IN). Normalize to a 2-letter code for Cartesia.
+                    # BCP-47 (en-IN). Normalize to a 2-letter code.
                     lang = str(ev.language).split("-")[0]
                     if os.getenv("TTS_PROVIDER", "cartesia") == "cartesia":
-                        session.tts.update_options(language=lang)
+                        # Switch voice AND language together so each language
+                        # gets its native voice.
+                        voice = LANG_VOICES.get(lang)
+                        if voice:
+                            session.tts.update_options(language=lang, voice=voice)
+                        else:
+                            session.tts.update_options(language=lang)
                     else:
                         session.tts.update_options(target_language_code=ev.language)
                 await _api_post(
