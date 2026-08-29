@@ -356,6 +356,15 @@ async def entrypoint(ctx: JobContext) -> None:
     # Greet via TTS only (session.say skips the LLM round-trip) so the agent
     # speaks within a beat of the call connecting — the caller shouldn't wait
     # ~2s for an LLM call before hearing anything.
+    # First ensure RoomIO's audio output is fully started AND subscribed by the
+    # SIP participant. Without this, the greeting's first frames block on
+    # subscription (silence on the first call when that setup is slower); the
+    # warm second call masks it.
+    try:
+        if session.room_io:
+            await asyncio.wait_for(session.room_io.wait_for_ready(), timeout=10)
+    except Exception as e:
+        print(f"room_io ready wait failed: {e}")
     await session.say(
         "Hello! This is Anu calling from ElevateBox. How are you doing today?"
     )
