@@ -1,0 +1,263 @@
+"""ElevateBox outbound sales agent (LiveKit Agents).
+
+Pipeline: Sarvam Saaras STT (te/hi/en codemix) -> DeepSeek LLM -> Sarvam Bulbul TTS.
+On a dispatched job with a phone number in metadata, the agent dials out via
+the configured Telnyx SIP trunk, then runs the sales conversation.
+"""
+import asyncio
+import os
+from datetime import datetime
+
+import httpx
+from dotenv import load_dotenv
+
+from livekit import api
+from livekit.agents import (
+    Agent,
+    AgentServer,
+    AgentSession,
+    JobContext,
+    cli,
+)
+from livekit.agents.beta.tools import EndCallTool
+from livekit.plugins import openai, sarvam
+
+from prompts import SYSTEM_PROMPT
+import tools
+from tools import book_callback, classify_lead, fire_whatsapp
+
+load_dotenv()
+
+AGENT_NAME = os.getenv("LIVEKIT_AGENT_NAME", "elevatebox-sales")
+TRUNK_ID = os.getenv("SIP_OUTBOUND_TRUNK_ID", "")
+FROM_NUMBER = os.getenv("SIP_FROM_NUMBER", "")
+
+
+async def _api_post(path: str, payload: dict) -> str:
+    base = os.getenv("API_BASE_URL", "http://localhost:3000").rstrip("/")
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            f"{base}/{path}",
+            json=payload,
+            headers={"X-API-Key": os.getenv("API_SECRET", "")},
+        )
+        r.raise_for_status()
+        return r.text
+
+server = AgentServer()
+
+
+def _build_session() -> AgentSession:
+    llm = openai.LLM(
+        model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
+        base_url="https://api.deepseek.com",
+    )
+    # Sarvam realtime streaming STT: the low-latency endpoint. `stream_type="fast"`
+    # is the fastest server latency profile, `mode="codemix"` keeps the
+    # code-switching behavior, and `language="auto"` adaptively identifies the
+    # caller's language so switches (en->ta->en) are followed live. Server-side
+    # VAD emits partial + final transcripts promptly; `vad_min_silence_ms` bounds
+    # how long a pause before the turn is committed (~400ms keeps it snappy
+    # without cutting callers off mid-thought).
+    stt = sarvam.STTRealtime(
+        api_key=os.getenv("SARVAM_API_KEY"),
+        language="auto",
+        stream_type="fast",
+        mode="codemix",
+        endpointing="vad",
+        vad_min_silence_ms=400,
+        vad_min_speech_ms=150,
+    )
+    # Sarvam TTS: target_language_code="unknown" auto-detects the language of
+    # each utterance, so Tamil/Telugu/Hindi/English all voice naturally.
+    # Lower min_buffer_size/max_chunk_length so audio starts sooner (lower TTFB).
+    tts = sarvam.TTS(
+        api_key=os.getenv("SARVAM_API_KEY"),
+        speaker=os.getenv("SARVAM_SPEAKER", "shreya"),
+        target_language_code=os.getenv("SARVAM_TTS_LANG", "unknown"),
+        min_buffer_size=30,
+        max_chunk_length=100,
+    )
+    # Safe endpointing: agent starts replying sooner, but the min delay still
+    # gives the caller room to pause mid-sentence without being cut off.
+    # turn_detection="vad" uses LiveKit's local Silero VAD to detect turn
+    # boundaries, instead of the eager EOT inference model which adds an extra
+    # round-trip before the reply starts.
+    # Preemptive generation runs the LLM (and TTS) while the caller is still
+    # finishing their sentence, so the reply feels instant.
+    return AgentSession(
+        stt=stt,
+        llm=llm,
+        tts=tts,
+        turn_handling={
+            "turn_detection": "vad",
+            "endpointing": {"mode": "fixed", "min_delay": 0.4, "max_delay": 1.2},
+            "preemptive_generation": {"enabled": True, "preemptive_tts": True},
+        },
+    )
+
+
+@server.rtc_session(agent_name=AGENT_NAME)
+async def entrypoint(ctx: JobContext) -> None:
+    # Outbound dial: the number to call arrives in dispatch metadata.
+    dial = {}
+    if ctx.job and ctx.job.metadata:
+        import json
+        try:
+            dial = json.loads(ctx.job.metadata)
+        except json.JSONDecodeError:
+            dial = {}
+
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    instructions = SYSTEM_PROMPT.format(
+        current_time=now,
+        from_number=FROM_NUMBER or "unknown",
+    )
+    agent = Agent(
+        instructions=instructions,
+        tools=[fire_whatsapp, book_callback, classify_lead, EndCallTool()],
+    )
+
+    greet = "Greet the customer warmly and introduce yourself as Anu from ElevateBox."
+
+    # Tag tool calls with this room so the dashboard can group them per call.
+    tools.ROOM = ctx.room.name
+
+    async def report_event(kind: str, detail: str = "", status: str = "") -> None:
+        try:
+            await _api_post("api/call/event", {"room": ctx.room.name, "kind": kind, "detail": detail, "status": status})
+        except Exception:
+            pass
+
+    # On shutdown — whether the callee hangs up, the agent calls end_call, or a
+    # failure occurs — delete the room so the SIP call is actually disconnected.
+    # (EndCallTool also deletes the room, but only via the session-close path;
+    # this guarantees the hangup in every case. Deleting the room disconnects
+    # all remote participants, including the Telnyx SIP caller.)
+    async def _on_shutdown() -> None:
+        await report_event("ended", "Call ended", "ended")
+        try:
+            await ctx.delete_room()
+        except Exception as e:
+            print(f"room deletion failed: {e}")
+
+    ctx.add_shutdown_callback(_on_shutdown)
+
+    # Start the session FIRST so the agent's RoomIO/audio connection is active
+    # in the room immediately. (Starting it only after the dial blocks on
+    # wait_until_answered -> LiveKit's "no RoomIO started within 10s" warning,
+    # and the callee hears silence because no agent audio is in the room.)
+    session = _build_session()
+    await session.start(agent=agent, room=ctx.room)
+
+    # Stream what the customer actually says into the dashboard timeline so the
+    # "How it decided" panel shows the real conversation, not just lifecycle
+    # events. Also lock the TTS to the customer's CURRENT language on every
+    # turn — switching voices as the customer switches (the fixed
+    # target_language_code="unknown" makes the TTS fall back to a default
+    # language, which also mispronounces amounts in e.g. Hindi).
+    detected_language: dict[str, str] = {}
+
+    async def _on_user_transcribed_async(ev) -> None:
+        if not ev.is_final or not ev.transcript.strip():
+            return
+        text = ev.transcript.strip()
+        await report_event("heard", text)
+        if ev.language:
+            detected_language[ev.language] = ev.language
+            try:
+                if session.tts:
+                    session.tts.update_options(target_language_code=ev.language)
+                await _api_post(
+                    "api/call/event",
+                    {"room": ctx.room.name, "language": ev.language},
+                )
+                await report_event("language", ev.language)
+            except Exception:
+                pass
+
+    # .on() only accepts synchronous callbacks — spawn the async work instead.
+    def _on_user_transcribed(ev) -> None:
+        asyncio.create_task(_on_user_transcribed_async(ev))
+
+    session.on("user_input_transcribed", _on_user_transcribed)
+
+    # When the call ends, send the post-call follow-up WhatsApp with the real
+    # conversation context + resume + architecture image. Transcript comes from
+    # the session's own history, so it reflects exactly what was said. Triggered
+    # from the awaited shutdown callback (not a fire-and-forget task) so it
+    # reliably completes before the job process exits.
+    followup_sent = False
+
+    async def _send_followup() -> None:
+        nonlocal followup_sent
+        if followup_sent:
+            return
+        followup_sent = True
+        try:
+            msgs = []
+            for m in session.history.messages():
+                content = m.content
+                if isinstance(content, str):
+                    text = content
+                else:
+                    text = " ".join(
+                        c if isinstance(c, str) else "" for c in content
+                    )
+                if text.strip() and m.role in ("user", "assistant"):
+                    msgs.append(f"{m.role}: {text.strip()}")
+            transcript = "\n".join(msgs)[:8000]
+            language = list(detected_language)[-1] if detected_language else "en"
+            await _api_post(
+                "api/followup",
+                {
+                    "room": ctx.room.name,
+                    "transcript": transcript,
+                    "language": language,
+                },
+            )
+            print("follow-up sent")
+        except Exception as e:
+            print(f"follow-up failed: {e}")
+
+    # Send the follow-up on job shutdown (awaited by the shutdown machinery so
+    # it completes before the process exits). One-shot via the flag.
+    ctx.add_shutdown_callback(_send_followup)
+
+    if dial.get("phone_number"):
+        # Pre-link audio to the expected SIP participant identity (matches
+        # LiveKit's working outbound examples) so frames route once they answer.
+        if session.room_io:
+            session.room_io.set_participant("customer")
+        try:
+            await ctx.api.sip.create_sip_participant(
+                api.CreateSIPParticipantRequest(
+                    room_name=ctx.room.name,
+                    sip_trunk_id=dial.get("sip_trunk_id", TRUNK_ID),
+                    sip_call_to=dial["phone_number"],
+                    participant_identity="customer",
+                    wait_until_answered=True,
+                )
+            )
+            print("call picked up")
+            await report_event("answered", "Customer picked up", "active")
+        except api.SipCallError as e:
+            # e.sip_status_code / e.sip_status carry the upstream carrier status
+            print(f"call failed: {e.sip_status_code} {e.sip_status}")
+            await report_event("failed", f"{e.sip_status_code} {e.sip_status}", "failed")
+            ctx.shutdown()
+            return
+        except asyncio.TimeoutError:
+            print("customer did not answer in time")
+            await report_event("failed", "no answer", "failed")
+            ctx.shutdown()
+            return
+        # Confirm the callee joined the room before greeting.
+        await ctx.wait_for_participant(identity="customer")
+
+    await session.generate_reply(instructions=greet)
+
+
+if __name__ == "__main__":
+    cli.run_app(server)

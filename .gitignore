@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+secrets.env
+*.log
+auth_info_baileys/
+__pycache__/
+*.pyc
+.venv/
+PLAN.md
+TEST_SCENARIOS.md
+ElevateBox_SDE_Intern_Assignment.pdf
