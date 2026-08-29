@@ -1,8 +1,10 @@
 """ElevateBox outbound sales agent (LiveKit Agents).
 
-Pipeline: Sarvam Saaras STT (te/hi/en codemix) -> DeepSeek LLM -> Sarvam Bulbul TTS.
-On a dispatched job with a phone number in metadata, the agent dials out via
-the configured Telnyx SIP trunk, then runs the sales conversation.
+Pipeline: Soniox STT (auto language ID) -> DeepSeek LLM -> Cartesia Sonic TTS.
+Sarvam STT/TTS remain in the codebase and can be re-enabled via env vars
+(STT_PROVIDER=sarvam / TTS_PROVIDER=sarvam). On a dispatched job with a phone
+number in metadata, the agent dials out via the configured Telnyx SIP trunk,
+then runs the sales conversation.
 """
 import asyncio
 import os
@@ -20,7 +22,7 @@ from livekit.agents import (
     cli,
 )
 from livekit.agents.beta.tools import EndCallTool
-from livekit.plugins import openai, sarvam
+from livekit.plugins import openai, sarvam, soniox, cartesia
 
 from prompts import SYSTEM_PROMPT
 import tools
@@ -53,40 +55,63 @@ def _build_session() -> AgentSession:
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com",
     )
-    # Sarvam realtime streaming STT: the low-latency endpoint. `stream_type="fast"`
-    # is the fastest server latency profile, `mode="codemix"` keeps the
-    # code-switching behavior, and `language="auto"` adaptively identifies the
-    # caller's language so switches (en->ta->en) are followed live. Server-side
-    # VAD emits partial + final transcripts promptly; `vad_min_silence_ms` bounds
-    # how long a pause before the turn is committed (~250ms keeps it snappy
-    # without cutting callers off mid-thought).
-    stt = sarvam.STTRealtime(
-        api_key=os.getenv("SARVAM_API_KEY"),
-        language="auto",
-        stream_type="fast",
-        mode="codemix",
-        endpointing="vad",
-        vad_min_silence_ms=250,
-        vad_min_speech_ms=150,
-    )
-    # Sarvam TTS: start in en-IN so the first greeting needs no language
-    # auto-detection (fastest first-byte). The per-utterance language switch
-    # (update_options in the transcript listener) takes over as the customer
-    # speaks Telugu/Hindi/Tamil/English.
-    # Lower min_buffer_size/max_chunk_length so audio starts sooner (lower TTFB).
-    tts = sarvam.TTS(
-        api_key=os.getenv("SARVAM_API_KEY"),
-        speaker=os.getenv("SARVAM_SPEAKER", "shreya"),
-        target_language_code="en-IN",
-        min_buffer_size=30,
-        max_chunk_length=100,
-    )
+
+    # --- STT ---
+    if os.getenv("STT_PROVIDER", "soniox") == "sarvam":
+        # Sarvam realtime streaming STT (fallback). `stream_type="fast"` is the
+        # fastest server latency profile, `mode="codemix"` keeps code-switching,
+        # `language="auto"` follows en->ta->en switches live. Server-side VAD
+        # emits partial + final transcripts promptly.
+        stt = sarvam.STTRealtime(
+            api_key=os.getenv("SARVAM_API_KEY"),
+            language="auto",
+            stream_type="fast",
+            mode="codemix",
+            endpointing="vad",
+            vad_min_silence_ms=250,
+            vad_min_speech_ms=150,
+        )
+    else:
+        # Soniox real-time STT (default): auto language identification (handles
+        # en/ta/te/hi code-switching with no hints), plus aggressive endpoint
+        # tuning so the turn commits as soon as the caller pauses.
+        stt = soniox.STT(
+            params=soniox.STTOptions(
+                model="stt-rt-v5",
+                enable_language_identification=True,
+                max_endpoint_delay_ms=500,
+                endpoint_latency_adjustment_level=3,
+            ),
+        )
+
+    # --- TTS ---
+    if os.getenv("TTS_PROVIDER", "cartesia") == "sarvam":
+        # Sarvam Bulbul TTS (fallback). Lower min_buffer_size/max_chunk_length
+        # so audio starts sooner (lower TTFB).
+        tts = sarvam.TTS(
+            api_key=os.getenv("SARVAM_API_KEY"),
+            speaker=os.getenv("SARVAM_SPEAKER", "shreya"),
+            target_language_code="en-IN",
+            min_buffer_size=30,
+            max_chunk_length=100,
+        )
+    else:
+        # Cartesia Sonic 3.5 (default): sub-90ms latency, natural expressive
+        # voice. Jacqueline (9626c31c-...) is a featured female voice with a
+        # native Hindi accent; the multilingual model adapts it to Tamil and
+        # Telugu while keeping the same voice identity. Language is switched
+        # per-utterance via update_options in the transcript listener.
+        tts = cartesia.TTS(
+            api_key=os.getenv("CARTESIA_API_KEY"),
+            model="sonic-3.5",
+            voice="9626c31c-bec5-4cca-baa8-f8ba9e84c8bc",  # Jacqueline
+            language="en",
+        )
+
     # Safe endpointing: agent starts replying sooner, but the min delay still
     # gives the caller room to pause mid-sentence without being cut off.
-    # turn_detection="stt" uses the Sarvam STT's own server-side VAD to end the
-    # turn (its vad_min_silence_ms is the single authority). This avoids running
-    # a SECOND VAD (Silero) + endpointing stack on top of the STT's VAD, which
-    # was adding a double silence-wait before the reply could start.
+    # turn_detection="stt" uses the STT's own endpoint detection to end the
+    # turn (single authority — no second VAD + endpointing stack on top).
     # Preemptive generation runs the LLM (and TTS) while the caller is still
     # finishing their sentence, so the reply feels instant.
     return AgentSession(
@@ -197,7 +222,13 @@ async def entrypoint(ctx: JobContext) -> None:
             detected_language[ev.language] = ev.language
             try:
                 if session.tts:
-                    session.tts.update_options(target_language_code=ev.language)
+                    # Soniox returns 2-letter codes (en/hi/ta/te); Sarvam returns
+                    # BCP-47 (en-IN). Normalize to a 2-letter code for Cartesia.
+                    lang = str(ev.language).split("-")[0]
+                    if os.getenv("TTS_PROVIDER", "cartesia") == "cartesia":
+                        session.tts.update_options(language=lang)
+                    else:
+                        session.tts.update_options(target_language_code=ev.language)
                 await _api_post(
                     "api/call/event",
                     {"room": ctx.room.name, "language": ev.language},
@@ -248,7 +279,15 @@ async def entrypoint(ctx: JobContext) -> None:
                 print("no customer speech — skipping follow-up")
                 return
             transcript = "\n".join(msgs)[:8000]
-            language = list(detected_language)[-1] if detected_language else "en"
+            raw_lang = list(detected_language)[-1] if detected_language else "en"
+            # Soniox gives 2-letter codes (en/hi/ta/te); the follow-up composer
+            # reads better with a full language name.
+            language = {
+                "en": "English",
+                "hi": "Hindi",
+                "ta": "Tamil",
+                "te": "Telugu",
+            }.get(raw_lang.split("-")[0], "English")
             await _api_post(
                 "api/followup",
                 {

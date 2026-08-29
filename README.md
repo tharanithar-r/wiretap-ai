@@ -4,8 +4,8 @@ A self-dialing, multilingual AI voice agent that runs real outbound sales calls:
 it dials, qualifies leads, and acts mid-call — sending WhatsApp, booking
 callbacks, and following up with full conversation context.
 
-Built on LiveKit Agents (SIP telephony), Sarvam AI (speech), a streaming LLM,
-and the WhatsApp Business API via Baileys.
+Built on LiveKit Agents (SIP telephony), Soniox (STT), Cartesia Sonic (TTS), a
+streaming LLM, and the WhatsApp Business API via Baileys.
 
 ## Highlights
 
@@ -34,7 +34,7 @@ and the WhatsApp Business API via Baileys.
        │                        ┌─────────┐
        │                        │ Caller  │
        │                        └─────────┘
-       │    STT · LLM · TTS (Sarvam + DeepSeek)
+       │    STT · LLM · TTS (Soniox + DeepSeek + Cartesia)
        ▼
 ┌─────────────┐   actions    ┌─────────────┐
 │   SQLite    │ ◄───────────► │   Baileys   │  WhatsApp
@@ -49,12 +49,15 @@ and the WhatsApp Business API via Baileys.
 | Concern | Tech |
 |---|---|
 | Telephony / agent | LiveKit Agents + LiveKit SIP (Telnyx trunk) |
-| Speech-to-text | Sarvam AI realtime STT (`saaras:v3-realtime`, codemix) |
+| Speech-to-text | Soniox realtime STT (`stt-rt-v5`, auto language ID) |
 | Language model | DeepSeek (streaming) |
-| Text-to-speech | Sarvam Bulbul (auto language) |
+| Text-to-speech | Cartesia Sonic 3.5 (sub-90ms, multilingual) |
 | WhatsApp | Baileys (WhatsApp Business) |
 | API + data | Node/Express + SQLite (better-sqlite3) |
 | Dashboard | React + HeroUI v3 + Vite + Tailwind v4 |
+
+> Sarvam STT/TTS remain in the codebase as a fallback — set
+> `STT_PROVIDER=sarvam` / `TTS_PROVIDER=sarvam` in the agent env to use them.
 
 ## Repository layout
 
@@ -119,7 +122,9 @@ See `.env.example` for the full list. Key ones:
 | `YOUR_NUMBER` | Your contact number shown in follow-ups |
 | `LIVEKIT_URL` / `LIVEKIT_API_KEY` / `LIVEKIT_API_SECRET` | LiveKit Cloud |
 | `SIP_OUTBOUND_TRUNK_ID` | Telnyx outbound trunk |
-| `SARVAM_API_KEY` | Sarvam STT/TTS |
+| `SARVAM_API_KEY` | Sarvam STT/TTS (fallback only) |
+| `SONIOX_API_KEY` | Soniox realtime STT |
+| `CARTESIA_API_KEY` | Cartesia Sonic TTS |
 | `DEEPSEEK_API_KEY` | LLM |
 | `API_SECRET` | Shared key for agent → API calls |
 

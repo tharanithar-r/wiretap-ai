@@ -1,3 +1,5 @@
 livekit-agents[openai]
 livekit-plugins-sarvam
+livekit-plugins-soniox
+livekit-plugins-cartesia
 python-dotenv
