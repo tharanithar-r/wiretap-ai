@@ -40,10 +40,13 @@ async function composeFollowup(
 	transcript: string,
 	language: string,
 ): Promise<string> {
-	// No real conversation (e.g. call failed early): send an honest, simple
-	// message instead of letting the LLM hallucinate a placeholder template.
+	// Only write a follow-up when the customer actually said something. If the
+	// caller never spoke (picked up and went silent), the "transcript" is just
+	// the agent's greeting — there's nothing to reference, so return an honest
+	// simple message instead of letting the LLM reply "please send the transcript".
 	const clean = transcript.trim();
-	if (!clean || clean.length < 40) {
+	const hasCustomerSpeech = /(^|\n)user:/i.test(clean);
+	if (!hasCustomerSpeech || clean.length < 40) {
 		return (
 			`Hi! This is Anu from ElevateBox. Thanks for taking my call just now — ` +
 			`sorry we didn't get to chat properly. Whenever you're free, reply here ` +
@@ -85,9 +88,16 @@ async function composeFollowup(
 	});
 	const data = await res.json();
 	let text = data.choices?.[0]?.message?.content?.trim() || "";
-	// Safety net: if the model still emitted placeholders, fall back to the
-	// honest simple message rather than sending brackets to the customer.
-	if (/\[[^\]]*\]/.test(text)) {
+	// Safety nets: if the model still emitted placeholders, OR it produced
+	// meta-output (asking for the transcript/details) instead of an actual
+	// follow-up, fall back to the honest simple message rather than sending
+	// brackets or a "please send me more info" reply to the customer.
+	const isMetaOutput =
+		/\[[^\]]*\]/.test(text) ||
+		/(paste|send|provide|share).{0,20}(transcript|details|context)/i.test(text) ||
+		/(please|kindly).{0,20}(paste|provide|share)/i.test(text) ||
+		/i (can't|cannot|need|require).{0,20}(transcript|details)/i.test(text);
+	if (isMetaOutput || !text) {
 		text =
 			`Hi! This is Anu from ElevateBox. Thanks again for our chat — I've noted what ` +
 			`you shared and I'm ready to help whenever you are. Reply here or call me at ` +

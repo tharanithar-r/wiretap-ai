@@ -206,6 +206,7 @@ async def entrypoint(ctx: JobContext) -> None:
         followup_sent = True
         try:
             msgs = []
+            has_user_speech = False
             for m in session.history.messages():
                 content = m.content
                 if isinstance(content, str):
@@ -214,8 +215,18 @@ async def entrypoint(ctx: JobContext) -> None:
                     text = " ".join(
                         c if isinstance(c, str) else "" for c in content
                     )
-                if text.strip() and m.role in ("user", "assistant"):
-                    msgs.append(f"{m.role}: {text.strip()}")
+                text = text.strip()
+                if not text:
+                    continue
+                if m.role == "user":
+                    has_user_speech = True
+                if m.role in ("user", "assistant"):
+                    msgs.append(f"{m.role}: {text}")
+            # If the caller picked up but never spoke, there's no context to
+            # follow up on — sending anything would be a hollow template.
+            if not has_user_speech:
+                print("no customer speech — skipping follow-up")
+                return
             transcript = "\n".join(msgs)[:8000]
             language = list(detected_language)[-1] if detected_language else "en"
             await _api_post(
