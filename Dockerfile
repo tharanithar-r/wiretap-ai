@@ -37,6 +37,6 @@ COPY --from=dashboard-build /app/dashboard/dist ./dashboard/dist
 COPY assets ./assets
 
 # persistent volumes: /app/api/data (SQLite) + /app/api/auth_info_baileys (WhatsApp session)
-EXPOSE 3000
 WORKDIR /app/api
+EXPOSE 3000
 CMD ["node", "dist/index.js"]
