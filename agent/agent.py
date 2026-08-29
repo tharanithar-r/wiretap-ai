@@ -159,6 +159,27 @@ async def entrypoint(ctx: JobContext) -> None:
     session = _build_session()
     await session.start(agent=agent, room=ctx.room)
 
+    # Prewarm the TTS/STT connections NOW, before dialing. AgentSession only
+    # prewarms the LLM; the Sarvam TTS pool is cold on the first call, so the
+    # greeting's first synthesis would wait on a fresh WebSocket handshake
+    # (producing silence on call #1). Warming it during the ring fixes that.
+    try:
+        if session.tts:
+            session.tts.prewarm()
+        if session.stt:
+            session.stt.prewarm()
+    except Exception as e:
+        print(f"prewarm failed: {e}")
+
+    # Force the TTS connection + model fully warm with a throwaway synthesis
+    # (fires during the ring; the greeting then plays on a hot connection).
+    try:
+        if session.tts:
+            async for _ in session.tts.synthesize("hello"):
+                pass
+    except Exception as e:
+        print(f"tts warmup failed: {e}")
+
     # Stream what the customer actually says into the dashboard timeline so the
     # "How it decided" panel shows the real conversation, not just lifecycle
     # events. Also lock the TTS to the customer's CURRENT language on every
