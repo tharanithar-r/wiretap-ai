@@ -69,18 +69,22 @@ def _build_session() -> AgentSession:
         vad_min_silence_ms=400,
         vad_min_speech_ms=150,
     )
-    # Sarvam TTS: target_language_code="unknown" auto-detects the language of
-    # each utterance, so Tamil/Telugu/Hindi/English all voice naturally.
+    # Sarvam TTS: start in en-IN so the first greeting needs no language
+    # auto-detection (fastest first-byte). The per-utterance language switch
+    # (update_options in the transcript listener) takes over as the customer
+    # speaks Telugu/Hindi/Tamil/English.
     # Lower min_buffer_size/max_chunk_length so audio starts sooner (lower TTFB).
     tts = sarvam.TTS(
         api_key=os.getenv("SARVAM_API_KEY"),
         speaker=os.getenv("SARVAM_SPEAKER", "shreya"),
-        target_language_code=os.getenv("SARVAM_TTS_LANG", "unknown"),
+        target_language_code="en-IN",
         min_buffer_size=30,
         max_chunk_length=100,
     )
     # Safe endpointing: agent starts replying sooner, but the min delay still
     # gives the caller room to pause mid-sentence without being cut off.
+    # "dynamic" mode adapts to the caller's actual pause pattern, so responses
+    # land as early as possible without misreading short silences as turn-ends.
     # turn_detection="vad" uses LiveKit's local Silero VAD to detect turn
     # boundaries, instead of the eager EOT inference model which adds an extra
     # round-trip before the reply starts.
@@ -92,7 +96,7 @@ def _build_session() -> AgentSession:
         tts=tts,
         turn_handling={
             "turn_detection": "vad",
-            "endpointing": {"mode": "fixed", "min_delay": 0.4, "max_delay": 1.2},
+            "endpointing": {"mode": "dynamic", "min_delay": 0.3, "max_delay": 1.2},
             "preemptive_generation": {"enabled": True, "preemptive_tts": True},
         },
     )
@@ -129,6 +133,11 @@ async def entrypoint(ctx: JobContext) -> None:
             await _api_post("api/call/event", {"room": ctx.room.name, "kind": kind, "detail": detail, "status": status})
         except Exception:
             pass
+
+    # Fire the event without blocking the greeting (the HTTP call to the API
+    # must not delay the agent's first words).
+    def report_event_async(kind: str, detail: str = "", status: str = "") -> None:
+        asyncio.create_task(report_event(kind, detail, status))
 
     # On shutdown — whether the callee hangs up, the agent calls end_call, or a
     # failure occurs — delete the room so the SIP call is actually disconnected.
@@ -242,7 +251,7 @@ async def entrypoint(ctx: JobContext) -> None:
                 )
             )
             print("call picked up")
-            await report_event("answered", "Customer picked up", "active")
+            report_event_async("answered", "Customer picked up", "active")
         except api.SipCallError as e:
             # e.sip_status_code / e.sip_status carry the upstream carrier status
             print(f"call failed: {e.sip_status_code} {e.sip_status}")
