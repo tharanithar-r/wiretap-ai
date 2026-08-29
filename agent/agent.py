@@ -55,32 +55,11 @@ TAMIL = "\u0b80-\u0bff"
 TELUGU = "\u0c00-\u0c7f"
 
 
-LANG_NAMES: dict[str, str] = {"en": "English", "hi": "Hindi", "ta": "Tamil", "te": "Telugu"}
-
-
 class SalesAgent(Agent):
     """Agent that locks the Cartesia voice+language to the script of the text
     it is about to speak, before TTS synthesis starts."""
 
     _current_lang: str = "en"
-
-    # Set by the STT transcript listener in entrypoint() on every final
-    # transcript. Read by on_user_turn_completed() below.
-    _last_stt_lang: str = "en"
-
-    async def on_user_turn_completed(self, turn_ctx, new_message) -> None:
-        lang = self._last_stt_lang
-        name = LANG_NAMES.get(lang, "English")
-        turn_ctx.add_message(
-            role="system",
-            content=(
-                f"[Detected language for the customer's last turn: {name}. "
-                f"Reply in {name} now, in the same natural code-mixed "
-                f"register and with the same fillers/self-corrections shown "
-                f"for {name} in your instructions. Do not default to "
-                f"English unless the customer is actually speaking English.]"
-            ),
-        )
 
     async def tts_node(self, text, model_settings):
         async def detect_and_yield():
@@ -136,8 +115,6 @@ def _build_session() -> AgentSession:
         model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com",
-        extra_body={"thinking": {"type": "disabled"}},
-        temperature=float(os.getenv("DEEPSEEK_TEMPERATURE", "0.95")),
     )
 
     # --- STT ---
@@ -324,7 +301,6 @@ async def entrypoint(ctx: JobContext) -> None:
     # target_language_code="unknown" makes the TTS fall back to a default
     # language, which also mispronounces amounts in e.g. Hindi).
     detected_language: dict[str, str] = {}
-    last_detected_lang = "en"
 
     async def _on_user_transcribed_async(ev) -> None:
         if not ev.is_final or not ev.transcript.strip():
@@ -348,28 +324,21 @@ async def entrypoint(ctx: JobContext) -> None:
     # voice before update_options lands, so the customer hears the wrong voice
     # for that language. The rest (dashboard events) goes to the async task.
     def _on_user_transcribed(ev) -> None:
-        nonlocal last_detected_lang
         if not ev.is_final or not ev.transcript.strip():
             return
-        if ev.language:
+        if ev.language and session.tts:
             lang = str(ev.language).split("-")[0]
-            last_detected_lang = lang
-            # Feeds on_user_turn_completed's explicit language reminder.
-            # Must happen synchronously here (before the LLM call fires),
-            # same reasoning as the voice-switch code right below it.
-            agent._last_stt_lang = lang
-            if session.tts:
-                try:
-                    if os.getenv("TTS_PROVIDER", "cartesia") == "cartesia":
-                        voice = LANG_VOICES.get(lang)
-                        if voice:
-                            session.tts.update_options(language=lang, voice=voice)
-                        else:
-                            session.tts.update_options(language=lang)
+            try:
+                if os.getenv("TTS_PROVIDER", "cartesia") == "cartesia":
+                    voice = LANG_VOICES.get(lang)
+                    if voice:
+                        session.tts.update_options(language=lang, voice=voice)
                     else:
-                        session.tts.update_options(target_language_code=ev.language)
-                except Exception:
-                    pass
+                        session.tts.update_options(language=lang)
+                else:
+                    session.tts.update_options(target_language_code=ev.language)
+            except Exception:
+                pass
         asyncio.create_task(_on_user_transcribed_async(ev))
 
     session.on("user_input_transcribed", _on_user_transcribed)
@@ -410,9 +379,15 @@ async def entrypoint(ctx: JobContext) -> None:
                 print("no customer speech — skipping follow-up")
                 return
             transcript = "\n".join(msgs)[:8000]
+            raw_lang = list(detected_language)[-1] if detected_language else "en"
             # Soniox gives 2-letter codes (en/hi/ta/te); the follow-up composer
             # reads better with a full language name.
-            language = LANG_NAMES.get(last_detected_lang, "English")
+            language = {
+                "en": "English",
+                "hi": "Hindi",
+                "ta": "Tamil",
+                "te": "Telugu",
+            }.get(raw_lang.split("-")[0], "English")
             await _api_post(
                 "api/followup",
                 {
