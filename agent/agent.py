@@ -19,10 +19,12 @@ from livekit.agents import (
     AgentServer,
     AgentSession,
     JobContext,
+    ModelSettings,
     cli,
 )
 from livekit.agents.beta.tools import EndCallTool
-from livekit.plugins import openai, sarvam, soniox, cartesia
+from livekit.agents.voice import room_io
+from livekit.plugins import openai, sarvam, soniox, cartesia, noise_cancellation
 
 from prompts import SYSTEM_PROMPT
 import tools
@@ -42,6 +44,56 @@ LANG_VOICES: dict[str, str] = {
     "te": os.getenv("CARTESIA_VOICE_TE", "4418bb06-8329-49a1-bb11-53bb64ca0547"),
     "hi": os.getenv("CARTESIA_VOICE_HI", "bec003e2-3cb3-429c-8468-206a393c67ad"),
 }
+
+# Script -> language code for the tts_node override. The LLM writes Telugu,
+# Tamil, Hindi in their native scripts (per the prompt), so detecting the
+# script of the text the agent is ABOUT to speak is the reliable signal for
+# which voice + language to use — better than the STT's language guess, which
+# races with preemptive TTS.
+DEVANAGARI = "\u0900-\u097f"
+TAMIL = "\u0b80-\u0bff"
+TELUGU = "\u0c00-\u0c7f"
+
+
+class SalesAgent(Agent):
+    """Agent that locks the Cartesia voice+language to the script of the text
+    it is about to speak, before TTS synthesis starts."""
+
+    _current_lang: str = "en"
+
+    async def tts_node(self, text, model_settings):
+        async def detect_and_yield():
+            async for chunk in text:
+                # Script detection needs only one non-Latin codepoint, not an
+                # accumulated buffer — unlike language ID on romanized text,
+                # a single Telugu/Tamil/Devanagari character is unambiguous.
+                # Checking per-chunk (rather than after N characters) means
+                # the voice switches as early as possible in each turn.
+                lang = _script_to_lang(chunk)
+                if lang != "en" and lang != self._current_lang:
+                    self._current_lang = lang
+                    self._switch_voice(lang)
+                yield chunk
+
+        return Agent.default.tts_node(self, detect_and_yield(), model_settings)
+
+    def _switch_voice(self, lang: str) -> None:
+        if os.getenv("TTS_PROVIDER", "cartesia") != "cartesia":
+            return
+        voice = LANG_VOICES.get(lang)
+        if voice:
+            self._session.tts.update_options(language=lang, voice=voice)
+
+
+def _script_to_lang(text: str) -> str:
+    import re
+    if re.search(f"[{TELUGU}]", text):
+        return "te"
+    if re.search(f"[{TAMIL}]", text):
+        return "ta"
+    if re.search(f"[{DEVANAGARI}]", text):
+        return "hi"
+    return "en"
 
 
 async def _api_post(path: str, payload: dict) -> str:
@@ -125,13 +177,23 @@ def _build_session() -> AgentSession:
     # turn (single authority — no second VAD + endpointing stack on top).
     # Preemptive generation runs the LLM (and TTS) while the caller is still
     # finishing their sentence, so the reply feels instant.
+    #
+    # endpointing.mode is "fixed", not "dynamic" — LiveKit's own turn-detection
+    # guide recommends fixed mode with min_delay=0 and explicitly says to avoid
+    # dynamic, since it lets the effective delay floor drift upward over the
+    # course of a session rather than staying pinned to the STT's own signal.
+    #
+    # Note: with turn_detection="stt" and no VAD attached, LiveKit's
+    # end_of_turn_delay metric is known to collapse to min_endpointing_delay
+    # rather than reflecting real STT decision time (open upstream issue).
+    # Real call latency isn't affected, but don't tune off that metric alone.
     return AgentSession(
         stt=stt,
         llm=llm,
         tts=tts,
         turn_handling={
             "turn_detection": "stt",
-            "endpointing": {"mode": "dynamic", "min_delay": 0.2, "max_delay": 1.0},
+            "endpointing": {"mode": "fixed", "min_delay": 0.0, "max_delay": 1.0},
             # Preemptive LLM generation (text) stays on for latency; preemptive
             # TTS is OFF so the audio stream is only created AFTER the turn is
             # confirmed — by then the per-language voice is locked in, avoiding
@@ -157,7 +219,7 @@ async def entrypoint(ctx: JobContext) -> None:
         current_time=now,
         from_number=FROM_NUMBER or "unknown",
     )
-    agent = Agent(
+    agent = SalesAgent(
         instructions=instructions,
         tools=[fire_whatsapp, book_callback, classify_lead, EndCallTool()],
     )
@@ -196,8 +258,20 @@ async def entrypoint(ctx: JobContext) -> None:
     # in the room immediately. (Starting it only after the dial blocks on
     # wait_until_answered -> LiveKit's "no RoomIO started within 10s" warning,
     # and the callee hears silence because no agent audio is in the room.)
+    #
+    # Agent-side noise cancellation via BVCTelephony: LiveKit's telephony docs
+    # recommend applying cancellation on the agent (not the SIP trunk) for
+    # calls handled by an agent, since it gives access to the enhanced models
+    # and keeps the config alongside the rest of the agent logic. This matters
+    # for STT accuracy and false-interruption rates on real mobile connections.
     session = _build_session()
-    await session.start(agent=agent, room=ctx.room)
+    await session.start(
+        agent=agent,
+        room=ctx.room,
+        room_input_options=room_io.RoomInputOptions(
+            noise_cancellation=noise_cancellation.BVCTelephony(),
+        ),
+    )
 
     # Prewarm the TTS/STT connections NOW, before dialing. AgentSession only
     # prewarms the LLM; the Sarvam TTS pool is cold on the first call, so the

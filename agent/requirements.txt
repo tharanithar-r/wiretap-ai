@@ -2,4 +2,5 @@ livekit-agents[openai]
 livekit-plugins-sarvam
 livekit-plugins-soniox
 livekit-plugins-cartesia
+livekit-plugins-noise-cancellation
 python-dotenv
