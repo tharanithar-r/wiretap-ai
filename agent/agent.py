@@ -37,8 +37,8 @@ FROM_NUMBER = os.getenv("SIP_FROM_NUMBER", "")
 # Per-language Cartesia voices (override via env if needed). Switched together
 # with the language in the transcript listener.
 LANG_VOICES: dict[str, str] = {
-    "en": os.getenv("CARTESIA_VOICE_EN", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
-    "ta": os.getenv("CARTESIA_VOICE_TA", "01d7796d-ac10-4ea3-8df0-3cc04f2d25ff"),
+    "en": os.getenv("CARTESIA_VOICE_EN", "f8f5f1b2-f02d-4d8e-a40d-fd850a487b3d"),
+    "ta": os.getenv("CARTESIA_VOICE_TA", "fb7d8d97-9730-4165-bd79-36b5ce61b5f2"),
     "te": os.getenv("CARTESIA_VOICE_TE", "4418bb06-8329-49a1-bb11-53bb64ca0547"),
     "hi": os.getenv("CARTESIA_VOICE_HI", "bec003e2-3cb3-429c-8468-206a393c67ad"),
 }
@@ -115,7 +115,7 @@ def _build_session() -> AgentSession:
         tts = cartesia.TTS(
             api_key=os.getenv("CARTESIA_API_KEY"),
             model="sonic-3.5",
-            voice=os.getenv("CARTESIA_VOICE_EN", "9626c31c-bec5-4cca-baa8-f8ba9e84c8bc"),
+            voice=os.getenv("CARTESIA_VOICE_EN", "f8f5f1b2-f02d-4d8e-a40d-fd850a487b3d"),
             language="en",
         )
 
@@ -132,7 +132,11 @@ def _build_session() -> AgentSession:
         turn_handling={
             "turn_detection": "stt",
             "endpointing": {"mode": "dynamic", "min_delay": 0.2, "max_delay": 1.0},
-            "preemptive_generation": {"enabled": True, "preemptive_tts": True},
+            # Preemptive LLM generation (text) stays on for latency; preemptive
+            # TTS is OFF so the audio stream is only created AFTER the turn is
+            # confirmed — by then the per-language voice is locked in, avoiding
+            # the wrong voice being snapshotted into a pre-emptive stream.
+            "preemptive_generation": {"enabled": True, "preemptive_tts": False},
         },
     )
 
@@ -232,20 +236,6 @@ async def entrypoint(ctx: JobContext) -> None:
         if ev.language:
             detected_language[ev.language] = ev.language
             try:
-                if session.tts:
-                    # Soniox returns 2-letter codes (en/hi/ta/te); Sarvam returns
-                    # BCP-47 (en-IN). Normalize to a 2-letter code.
-                    lang = str(ev.language).split("-")[0]
-                    if os.getenv("TTS_PROVIDER", "cartesia") == "cartesia":
-                        # Switch voice AND language together so each language
-                        # gets its native voice.
-                        voice = LANG_VOICES.get(lang)
-                        if voice:
-                            session.tts.update_options(language=lang, voice=voice)
-                        else:
-                            session.tts.update_options(language=lang)
-                    else:
-                        session.tts.update_options(target_language_code=ev.language)
                 await _api_post(
                     "api/call/event",
                     {"room": ctx.room.name, "language": ev.language},
@@ -254,8 +244,27 @@ async def entrypoint(ctx: JobContext) -> None:
             except Exception:
                 pass
 
-    # .on() only accepts synchronous callbacks — spawn the async work instead.
+    # .on() only accepts synchronous callbacks. The voice/language switch MUST
+    # happen synchronously here, in the same tick as the final transcript — if
+    # it runs in a deferred task, a preemptive TTS stream can snapshot the old
+    # voice before update_options lands, so the customer hears the wrong voice
+    # for that language. The rest (dashboard events) goes to the async task.
     def _on_user_transcribed(ev) -> None:
+        if not ev.is_final or not ev.transcript.strip():
+            return
+        if ev.language and session.tts:
+            lang = str(ev.language).split("-")[0]
+            try:
+                if os.getenv("TTS_PROVIDER", "cartesia") == "cartesia":
+                    voice = LANG_VOICES.get(lang)
+                    if voice:
+                        session.tts.update_options(language=lang, voice=voice)
+                    else:
+                        session.tts.update_options(language=lang)
+                else:
+                    session.tts.update_options(target_language_code=ev.language)
+            except Exception:
+                pass
         asyncio.create_task(_on_user_transcribed_async(ev))
 
     session.on("user_input_transcribed", _on_user_transcribed)
