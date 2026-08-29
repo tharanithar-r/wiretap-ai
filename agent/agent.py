@@ -121,8 +121,10 @@ async def entrypoint(ctx: JobContext) -> None:
 
     greet = "Greet the customer warmly and introduce yourself as Anu from ElevateBox."
 
-    # Tag tool calls with this room so the dashboard can group them per call.
+    # Tag tool calls with this room so the dashboard can group them per call,
+    # and with the dialed number so WhatsApp/callbacks reach the caller.
     tools.ROOM = ctx.room.name
+    tools.TO_NUMBER = dial.get("phone_number", "")
 
     async def report_event(kind: str, detail: str = "", status: str = "") -> None:
         try:
@@ -215,6 +217,7 @@ async def entrypoint(ctx: JobContext) -> None:
                     "room": ctx.room.name,
                     "transcript": transcript,
                     "language": language,
+                    "to": dial.get("phone_number", ""),
                 },
             )
             print("follow-up sent")

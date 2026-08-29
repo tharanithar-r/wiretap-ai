@@ -99,9 +99,32 @@ export default function App() {
 	const [selected, setSelected] = useState<string | null>(null);
 	const manualSelected = useRef(false);
 	const [calling, setCalling] = useState(false);
+	const [number, setNumber] = useState<string>("");
+	const [editing, setEditing] = useState(false);
+	const [draft, setDraft] = useState<string>("");
 	const [msg, setMsg] = useState<string | null>(null);
 	const [err, setErr] = useState<string | null>(null);
 	const timer = useRef<number | null>(null);
+
+	useEffect(() => {
+		const saved = localStorage.getItem("dial-number");
+		getJSON<{ target_number: string }>("/api/config")
+			.then((c) => setNumber(saved || c.target_number))
+			.catch(() => setNumber(saved || ""));
+	}, []);
+
+	function startEdit() {
+		setDraft(number);
+		setEditing(true);
+	}
+	function saveEdit() {
+		const clean = draft.replace(/[^\d+]/g, "");
+		if (clean) {
+			setNumber(clean);
+			localStorage.setItem("dial-number", clean);
+		}
+		setEditing(false);
+	}
 
 	const refresh = useCallback(async () => {
 		try {
@@ -154,7 +177,11 @@ export default function App() {
 		try {
 			const r = await fetch("/api/call/start", {
 				method: "POST",
-				headers: { "X-API-Key": "elevatebox123" },
+				headers: {
+					"X-API-Key": "elevatebox123",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ to: number }),
 			});
 			if (!r.ok) throw new Error("call failed to start");
 			const { room } = await r.json();
@@ -181,7 +208,7 @@ export default function App() {
 							<span className="relative inline-flex size-2 rounded-full bg-accent" />
 						</span>
 						<div>
-							<p className="text-sm font-semibold tracking-tight">ElevateBox</p>
+							<p className="text-sm font-semibold tracking-tight">WireTap AI</p>
 							<p className="font-mono text-[11px] uppercase tracking-widest text-muted">
 								Voice Sales Agent
 							</p>
@@ -216,14 +243,54 @@ export default function App() {
 								</span>
 							</div>
 						)}
-						<Button
-							size="md"
-							isDisabled={calling}
-							onPress={startCall}
-							className="active:translate-y-[1px]"
-						>
-							{calling ? "Dialing…" : "Call the manager"}
-						</Button>
+						<div className="flex items-center gap-2">
+							{/* dial number: edit to change, save to confirm */}
+							<div className="flex h-10 items-center gap-1 rounded-md border border-default/60 bg-surface pl-3 pr-1">
+								{editing ? (
+									<>
+										<input
+											autoFocus
+											type="tel"
+											value={draft}
+											onChange={(e) => setDraft(e.target.value)}
+											onKeyDown={(e) => e.key === "Enter" && saveEdit()}
+											placeholder="+91…"
+											className="h-full w-40 bg-transparent font-mono text-sm text-foreground outline-none placeholder:text-muted"
+										/>
+										<button
+											type="button"
+											onClick={saveEdit}
+											title="Save number"
+											className="flex size-7 items-center justify-center rounded text-muted hover:bg-default/30 hover:text-success"
+										>
+											<CheckIcon />
+										</button>
+									</>
+								) : (
+									<>
+										<span className="font-mono text-sm text-foreground">
+											{number || <span className="text-muted">add number</span>}
+										</span>
+										<button
+											type="button"
+											onClick={startEdit}
+											title="Edit number"
+											className="flex size-7 items-center justify-center rounded text-muted hover:bg-default/30 hover:text-foreground"
+										>
+											<PencilIcon />
+										</button>
+									</>
+								)}
+							</div>
+							<Button
+								size="md"
+								isDisabled={!number || calling}
+								onPress={startCall}
+								className="active:translate-y-[1px]"
+							>
+								{calling ? "Dialing…" : "Start a call"}
+							</Button>
+						</div>
 					</div>
 				</div>
 			</header>
@@ -280,7 +347,7 @@ export default function App() {
 						{calls.length === 0 ? (
 							<EmptyState
 								line="No calls yet."
-								hint="Walk through the 8 steps the agent performs — or hit Call the manager to start one live."
+								hint="No calls yet. Start a live call to see the agent work in real time."
 							/>
 						) : (
 							<Table>
@@ -536,5 +603,21 @@ function EmptyState({ line, hint }: { line: string; hint: string }) {
 			<p className="text-sm font-medium">{line}</p>
 			<p className="max-w-[38ch] text-xs text-muted">{hint}</p>
 		</div>
+	);
+}
+
+function PencilIcon() {
+	return (
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+		</svg>
+	);
+}
+
+function CheckIcon() {
+	return (
+		<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+			<path d="M20 6 9 17l-5-5" />
+		</svg>
 	);
 }

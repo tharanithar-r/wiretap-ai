@@ -14,6 +14,10 @@ from livekit.agents import function_tool
 # grouped to a call (room) for the dashboard timeline.
 ROOM: str = ""
 
+# The number being called this session. Carried into every API payload so
+# WhatsApp messages + callbacks go to the caller, not a fixed default.
+TO_NUMBER: str = ""
+
 
 def _api_url(path: str) -> str:
     base = os.getenv("API_BASE_URL", "http://localhost:3000").rstrip("/")
@@ -22,6 +26,7 @@ def _api_url(path: str) -> str:
 
 async def _post(path: str, payload: dict) -> str:
     payload["room"] = ROOM
+    payload["to"] = TO_NUMBER or os.getenv("WHATSAPP_TO", "")
     async with httpx.AsyncClient(timeout=10) as client:
         r = await client.post(
             _api_url(path),

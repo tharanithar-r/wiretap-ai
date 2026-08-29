@@ -98,13 +98,21 @@ async function composeFollowup(
 
 app.get("/health", (_req, res) => res.json({ ok: true }));
 
-// Trigger an outbound sales call (to the manager by default)
-app.post("/api/call/start", requireKey, async (_req, res) => {
+// Dashboard config: default dial + WhatsApp numbers so the UI can prefill.
+app.get("/api/config", (_req, res) =>
+	res.json({ target_number: TARGET, whatsapp_to: TO, your_number: process.env.YOUR_NUMBER || "" }),
+);
+
+// Trigger an outbound sales call. Optional `to` overrides the default target;
+// the agent dials it and all WhatsApp actions target the same number.
+app.post("/api/call/start", requireKey, async (req, res) => {
 	try {
-		const room = await startCall(TARGET);
-		upsertCall(room, TARGET);
-		addEvent(room, "dial", "Calling " + TARGET);
-		res.json({ room });
+		const to = (req.body.to || TARGET || "").toString().replace(/[^\d+]/g, "");
+		if (!to) return res.status(400).json({ error: "no number to call" });
+		const room = await startCall(to);
+		upsertCall(room, to);
+		addEvent(room, "dial", "Calling " + to);
+		res.json({ room, to });
 	} catch (e) {
 		res.status(500).json({ error: String(e) });
 	}
@@ -171,12 +179,13 @@ app.post("/api/call/event", requireKey, async (req, res) => {
 app.post("/api/followup", requireKey, async (req, res) => {
 	try {
 		const { language = "en", transcript = "", room = "" } = req.body;
+		const to = req.body.to || TO;
 		const text = await composeFollowup(transcript, language);
-		await sendText(TO, text);
+		await sendText(to, text);
 		const img = path.join(ASSETS_DIR, "architecture.png");
 		const resume = path.join(ASSETS_DIR, "resume.pdf");
-		if (existsSync(img)) await sendImage(TO, img, "How I built this");
-		if (existsSync(resume)) await sendDocument(TO, resume, "resume.pdf", "application/pdf");
+		if (existsSync(img)) await sendImage(to, img, "How I built this");
+		if (existsSync(resume)) await sendDocument(to, resume, "resume.pdf", "application/pdf");
 		if (room) {
 			upsertCall(room);
 			updateCallLanguage(room, language);
