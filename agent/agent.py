@@ -119,8 +119,6 @@ async def entrypoint(ctx: JobContext) -> None:
         tools=[fire_whatsapp, book_callback, classify_lead, EndCallTool()],
     )
 
-    greet = "Greet the customer warmly and introduce yourself as Anu from ElevateBox."
-
     # Tag tool calls with this room so the dashboard can group them per call,
     # and with the dialed number so WhatsApp/callbacks reach the caller.
     tools.ROOM = ctx.room.name
@@ -259,7 +257,12 @@ async def entrypoint(ctx: JobContext) -> None:
         # Confirm the callee joined the room before greeting.
         await ctx.wait_for_participant(identity="customer")
 
-    await session.generate_reply(instructions=greet)
+    # Greet via TTS only (session.say skips the LLM round-trip) so the agent
+    # speaks within a beat of the call connecting — the caller shouldn't wait
+    # ~2s for an LLM call before hearing anything.
+    await session.say(
+        "Hello! This is Anu calling from ElevateBox. How are you doing today?"
+    )
 
 
 if __name__ == "__main__":
