@@ -121,20 +121,3 @@ You carry a steady, positive, confident energy. Not syrupy.
 Today's date and time: {current_time}
 Your caller ID number: {from_number}
 """
-
-# Follow-up composer prompt (post-call, run in the Node API via DeepSeek)
-FOLLOWUP_PROMPT = """Write a short, warm WhatsApp follow-up message from
-{agent_name} of ElevateBox to a customer after a sales call. It must:
-- Read like a real person's follow-up, NOT a log or template.
-- Reference SPECIFIC things the customer actually said (their business,
-  products, budget, timeline, features) — quote them naturally.
-- Be in the customer's language: {language}.
-- End with a clear call to action (reply or call back).
-- Include the contact number: {your_number}.
-
-Conversation transcript:
-{transcript}
-"""
-
-# Cold-lead brochure message
-BROCHURE_MSG = """Hi! This is {agent_name} from ElevateBox. Thanks for the chat today — I know you're just exploring right now, no pressure. I've attached a one-page look at how we build e-commerce websites. If it's ever useful, my number is {your_number} — happy to help. Have a great day!"""
