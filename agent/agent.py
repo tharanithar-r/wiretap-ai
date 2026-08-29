@@ -115,6 +115,8 @@ def _build_session() -> AgentSession:
         model=os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
         api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url="https://api.deepseek.com",
+        extra_body={"thinking": {"type": "disabled"}},
+        temperature=float(os.getenv("DEEPSEEK_TEMPERATURE", "0.95")),
     )
 
     # --- STT ---
