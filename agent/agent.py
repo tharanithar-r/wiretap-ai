@@ -58,7 +58,7 @@ def _build_session() -> AgentSession:
     # code-switching behavior, and `language="auto"` adaptively identifies the
     # caller's language so switches (en->ta->en) are followed live. Server-side
     # VAD emits partial + final transcripts promptly; `vad_min_silence_ms` bounds
-    # how long a pause before the turn is committed (~400ms keeps it snappy
+    # how long a pause before the turn is committed (~250ms keeps it snappy
     # without cutting callers off mid-thought).
     stt = sarvam.STTRealtime(
         api_key=os.getenv("SARVAM_API_KEY"),
@@ -66,7 +66,7 @@ def _build_session() -> AgentSession:
         stream_type="fast",
         mode="codemix",
         endpointing="vad",
-        vad_min_silence_ms=400,
+        vad_min_silence_ms=250,
         vad_min_speech_ms=150,
     )
     # Sarvam TTS: start in en-IN so the first greeting needs no language
@@ -83,11 +83,10 @@ def _build_session() -> AgentSession:
     )
     # Safe endpointing: agent starts replying sooner, but the min delay still
     # gives the caller room to pause mid-sentence without being cut off.
-    # "dynamic" mode adapts to the caller's actual pause pattern, so responses
-    # land as early as possible without misreading short silences as turn-ends.
-    # turn_detection="vad" uses LiveKit's local Silero VAD to detect turn
-    # boundaries, instead of the eager EOT inference model which adds an extra
-    # round-trip before the reply starts.
+    # turn_detection="stt" uses the Sarvam STT's own server-side VAD to end the
+    # turn (its vad_min_silence_ms is the single authority). This avoids running
+    # a SECOND VAD (Silero) + endpointing stack on top of the STT's VAD, which
+    # was adding a double silence-wait before the reply could start.
     # Preemptive generation runs the LLM (and TTS) while the caller is still
     # finishing their sentence, so the reply feels instant.
     return AgentSession(
@@ -95,8 +94,8 @@ def _build_session() -> AgentSession:
         llm=llm,
         tts=tts,
         turn_handling={
-            "turn_detection": "vad",
-            "endpointing": {"mode": "dynamic", "min_delay": 0.3, "max_delay": 1.2},
+            "turn_detection": "stt",
+            "endpointing": {"mode": "dynamic", "min_delay": 0.2, "max_delay": 1.0},
             "preemptive_generation": {"enabled": True, "preemptive_tts": True},
         },
     )
